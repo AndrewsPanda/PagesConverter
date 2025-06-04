@@ -3,6 +3,8 @@
 Pages to Word Converter - Python Version
 More stable alternative to AppleScript for macOS Sequoia
 Requires: Python 3.6+ (included with macOS)
+
+UPDATED: Now skips files already in 'pages' folders and checks for existing conversions
 """
 
 import os
@@ -21,6 +23,7 @@ class PagesToWordConverter:
         self.files_processed = 0
         self.converted_count = 0
         self.error_count = 0
+        self.skipped_count = 0
         
         # Setup logging
         log_filename = f"pages_conversion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -37,9 +40,32 @@ class PagesToWordConverter:
         self.logger = logging.getLogger(__name__)
         
     def find_pages_files(self):
-        """Find all Pages documents in target directory"""
-        pages_files = list(self.target_dir.rglob("*.pages"))
-        self.logger.info(f"Found {len(pages_files)} Pages documents")
+        """Find all Pages documents in target directory, excluding those already in 'pages' folders"""
+        # Find all .pages files
+        all_pages_files = list(self.target_dir.rglob("*.pages"))
+        
+        # Filter out files that are already in 'pages' folders
+        pages_files = []
+        already_processed = 0
+        
+        for file in all_pages_files:
+            # Check if this file is in a 'pages' subfolder
+            if 'pages' in file.parts[len(self.target_dir.parts):]:
+                already_processed += 1
+                self.logger.debug(f"Skipping (in pages folder): {file.name}")
+            else:
+                # Also check if a corresponding .docx already exists
+                word_file = file.with_suffix('.docx')
+                if word_file.exists():
+                    already_processed += 1
+                    self.logger.info(f"Skipping (already converted): {file.name}")
+                else:
+                    pages_files.append(file)
+        
+        self.logger.info(f"Found {len(all_pages_files)} total Pages documents")
+        self.logger.info(f"Already processed: {already_processed}")
+        self.logger.info(f"To be converted: {len(pages_files)}")
+        
         return pages_files
     
     def restart_pages_app(self):
@@ -60,18 +86,30 @@ class PagesToWordConverter:
         ], capture_output=True)
         time.sleep(2)
     
+    def sanitize_filename_for_applescript(self, filepath):
+        """Escape special characters in filepath for AppleScript"""
+        # Convert Path to string and escape backslashes and quotes
+        filepath_str = str(filepath)
+        filepath_str = filepath_str.replace('\\', '\\\\')
+        filepath_str = filepath_str.replace('"', '\\"')
+        return filepath_str
+    
     def convert_file(self, pages_file):
         """Convert a single Pages file to Word format"""
         # Prepare paths
         word_file = pages_file.with_suffix('.docx')
         
+        # Sanitize file paths for AppleScript
+        pages_path = self.sanitize_filename_for_applescript(pages_file)
+        word_path = self.sanitize_filename_for_applescript(word_file)
+        
         # AppleScript for conversion
         applescript = f'''
         tell application "Pages"
             try
-                set theDoc to open POSIX file "{pages_file}"
+                set theDoc to open POSIX file "{pages_path}"
                 delay 1
-                export theDoc to POSIX file "{word_file}" as Microsoft Word
+                export theDoc to POSIX file "{word_path}" as Microsoft Word
                 close theDoc saving no
                 return "SUCCESS"
             on error errMsg number errNum
@@ -122,7 +160,7 @@ class PagesToWordConverter:
     def show_progress(self, current, total, filename):
         """Display progress bar in terminal"""
         bar_length = 40
-        progress = current / total
+        progress = current / total if total > 0 else 1
         filled = int(bar_length * progress)
         bar = '█' * filled + '░' * (bar_length - filled)
         
@@ -133,15 +171,19 @@ class PagesToWordConverter:
         self.logger.info("Starting Pages to Word conversion")
         self.logger.info(f"Target directory: {self.target_dir}")
         
-        # Find all Pages files
+        # Find all Pages files (excluding already processed ones)
         pages_files = self.find_pages_files()
+        
         if not pages_files:
-            self.logger.warning("No Pages documents found")
+            print("\n✅ No new Pages documents to convert!")
+            print("All Pages files in this directory have already been processed.")
+            self.logger.info("No new files to convert")
             return
         
         # Confirm with user
         print(f"\nThis will convert {len(pages_files)} Pages documents to Word format.")
         print("Original files will be moved to 'pages' subfolders.")
+        print("Already converted files will be skipped.")
         response = input("\nContinue? (y/n): ")
         if response.lower() != 'y':
             print("Cancelled by user")
@@ -186,7 +228,7 @@ class PagesToWordConverter:
         """Display conversion summary"""
         print("\n" + "="*60)
         print(f"CONVERSION COMPLETE!")
-        print(f"Total Pages documents: {self.files_processed}")
+        print(f"Total Pages documents processed: {self.files_processed}")
         print(f"Successfully converted: {self.converted_count} ✓")
         print(f"Errors: {self.error_count} ✗")
         print(f"\nLog file: {self.log_path}")
